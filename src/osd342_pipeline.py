@@ -13,6 +13,7 @@ Run directly:
 Outputs:
     results/tables/osd342_bone_marker_stats.csv
     results/figures/osd342_igfbp2_boxplot.png
+    results/figures/osd342_marker_screen_summary.png
 """
 from pathlib import Path
 
@@ -112,6 +113,37 @@ def plot_top_hit(annot: pd.DataFrame, data: pd.DataFrame, groups: list, gene: st
     plt.close(fig)
 
 
+def plot_marker_summary(res: pd.DataFrame, out_path: Path) -> None:
+    """Ranked bar chart of -log10(p) across the full marker panel, FDR-significant hit highlighted."""
+    df = res.sort_values("p", ascending=False).reset_index(drop=True)
+    neglogp = -np.log10(df["p"])
+    accent, neutral = "#2a78d6", "#c3c2b7"
+    colors = [accent if sig else neutral for sig in df["significant_FDR05"]]
+
+    fig, ax = plt.subplots(figsize=(7, 9.5), facecolor="#fcfcfb")
+    ax.set_facecolor("#fcfcfb")
+    y = np.arange(len(df))
+    ax.barh(y, neglogp, color=colors, height=0.62, zorder=3)
+    ax.set_yticks(y)
+    ax.set_yticklabels(df["Gene"], fontsize=9)
+    ax.set_xlabel("-log10(p), Flight vs Ground Control", fontsize=10)
+    n_sig = int(df["significant_FDR05"].sum())
+    top_q = df.loc[df["significant_FDR05"], "p_adj_BH"].min() if n_sig else float("nan")
+    ax.set_title(
+        f"OSD-342 plasma bone-marker screen (39 candidate proteins screened; n=8 mice/group)\n"
+        f"{n_sig} of {len(df)} survive Benjamini-Hochberg FDR correction" + (f" (q={top_q:.3f})" if n_sig else ""),
+        fontsize=11, loc="left", pad=14,
+    )
+    ax.grid(axis="x", color="#e1e0d9", linewidth=0.8, zorder=0)
+    ax.set_axisbelow(True)
+    for spine in ["top", "right", "left"]:
+        ax.spines[spine].set_visible(False)
+    ax.axvline(-np.log10(0.05), color="#898781", linewidth=0.8, linestyle=(0, (3, 3)), zorder=2)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=300, facecolor="#fcfcfb", bbox_inches="tight")
+    plt.close(fig)
+
+
 def main() -> None:
     TABLES_DIR.mkdir(parents=True, exist_ok=True)
     FIGURES_DIR.mkdir(parents=True, exist_ok=True)
@@ -122,6 +154,7 @@ def main() -> None:
 
     top_gene = res.iloc[0]["Gene"]
     plot_top_hit(annot, data, groups, top_gene, FIGURES_DIR / f"osd342_{top_gene.lower()}_boxplot.png")
+    plot_marker_summary(res, FIGURES_DIR / "osd342_marker_screen_summary.png")
 
     print(res.to_string(index=False))
     print(f"\n{res['significant_FDR05'].sum()} of {len(res)} bone markers survive BH-FDR q<0.05")

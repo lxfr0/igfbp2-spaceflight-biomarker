@@ -6,8 +6,9 @@ transformed microCT measurement CSV, then runs group comparisons
 (Baseline vs Ground Control vs Space Flight) per mission and tissue,
 with Cohen's d + 95% CI per comparison and Benjamini-Hochberg FDR
 correction applied across all 12 pairwise tests (2 missions x 2
-skeletal metrics x 3 group contrasts) -- the same correction family
-size used for the OSD-342 marker screen.
+skeletal metrics x 3 group contrasts). This is a separate 12-test
+correction family from OSD-342's 39-marker screen (osd342_pipeline.py)
+-- same correction method, different family size.
 
 Run directly:
     python src/osd977_pipeline.py
