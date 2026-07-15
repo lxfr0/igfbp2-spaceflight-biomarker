@@ -102,6 +102,35 @@ def _scaled(vals: np.ndarray, scale: str) -> np.ndarray:
     return np.log2(vals) if scale == "log2" else vals
 
 
+def select_primary_reagents(annot: pd.DataFrame, data: pd.DataFrame, groups: list,
+                             group_a: str, group_b: str) -> dict:
+    """For genes with more than one SomaScan reagent, select the reagent with the
+    lowest coefficient of variation (SD/mean) across all 16 untreated animals
+    (both groups pooled). This is a pre-specified, outcome-independent selection
+    rule -- it never looks at the flight-vs-ground group labels, only at overall
+    measurement reproducibility -- replacing an earlier "first-listed reagent"
+    rule that had no principled justification. Returns {gene: row_index}."""
+    a_idx = [i for i, g in enumerate(groups) if g == group_a]
+    b_idx = [i for i, g in enumerate(groups) if g == group_b]
+    pooled_idx = a_idx + b_idx
+
+    candidates = {}
+    for i, gene in annot["EntrezGeneSymbol"].items():
+        if gene in BONE_MARKERS:
+            candidates.setdefault(gene, []).append(i)
+
+    selected = {}
+    for gene, row_idx in candidates.items():
+        best_row, best_cv = None, None
+        for i in row_idx:
+            vals = data.iloc[i, pooled_idx].values.astype(float)
+            cv = vals.std(ddof=1) / vals.mean()
+            if best_cv is None or cv < best_cv:
+                best_row, best_cv = i, cv
+        selected[gene] = best_row
+    return selected
+
+
 def compare_bone_markers(
     annot: pd.DataFrame, data: pd.DataFrame, groups: list, group_a: str, group_b: str,
     scale: str = "log2", dedup: bool = True,
@@ -109,22 +138,21 @@ def compare_bone_markers(
     """Welch + Hedges' g + BH-FDR for the candidate panel.
 
     scale: "log2" (primary) or "raw" (sensitivity).
-    dedup: if True, keep only the first-listed reagent per gene (39 unique
-        genes, matching the original panel definition). If False, report
+    dedup: if True, keep only the lowest-CV reagent per gene (39 unique genes;
+        see select_primary_reagents for the selection rule). If False, report
         every one of the 44 SomaScan reagents mapping to a candidate gene.
     """
     a_idx = [i for i, g in enumerate(groups) if g == group_a]
     b_idx = [i for i, g in enumerate(groups) if g == group_b]
 
+    primary_rows = set(select_primary_reagents(annot, data, groups, group_a, group_b).values()) if dedup else None
+
     rows = []
-    seen = set()
     for i, gene in annot["EntrezGeneSymbol"].items():
         if gene not in BONE_MARKERS:
             continue
-        if dedup:
-            if gene in seen:
-                continue
-            seen.add(gene)
+        if dedup and i not in primary_rows:
+            continue
         a_raw = data.iloc[i, a_idx].values.astype(float)
         b_raw = data.iloc[i, b_idx].values.astype(float)
         a_vals = _scaled(a_raw, scale)
@@ -196,6 +224,255 @@ def full_proteome_sensitivity(
     }
 
 
+# Kimura et al. (2024a), Table 1: the complete list of 30 serum proteins whose levels
+# changed in the same direction in spaceflight (mu-g vs A1-g) and hindlimb-unloading
+# (HU vs control) mice, taken directly from the paper's own Table 1 (Proteomics 24(9):
+# e2300214, Open Access) -- not re-derived or approximated. UniProt is the MOUSE
+# accession Kimura reports; direction is the sign of their reported mu-g-vs-A1-g log2
+# change (identical in sign to their HU-vs-control column for every listed protein).
+# NOTE: SomaScan's own UniProt annotation column (in `annot`) records each aptamer's
+# HUMAN target accession, even in this mouse assay (aptamers are raised against human
+# proteins) -- confirmed by direct comparison (e.g. IGFBP2: Kimura's mouse accession is
+# P47877, SomaScan lists the human accession P18065). Cross-species UniProt accessions
+# therefore cannot be matched directly without an additional human-mouse ortholog table,
+# so mapping here uses gene symbol (case-normalized), which is unambiguous for every
+# protein below -- not a fallback of convenience.
+KIMURA_2024A_TABLE = [
+    # (UniProt_mouse, Gene, ProteinName, log2_muG_vs_A1g, log2_HU_vs_control)
+    ("P12246", "APCS", "Serum amyloid P-component", 0.91, 1.72),
+    ("P00688", "AMY2", "Pancreatic alpha-amylase", 0.27, 0.32),
+    ("P29533", "VCAM1", "Vascular cell adhesion protein 1", -0.20, -0.40),
+    ("P97290", "SERPING1", "Plasma protease C1 inhibitor", -0.20, -0.48),
+    ("P98064", "MASP1", "Mannan-binding lectin serine protease 1", -0.21, -0.35),
+    ("Q06890", "CLU", "Clusterin", -0.23, -0.36),
+    ("P97298", "SERPINF1", "Pigment epithelium-derived factor", -0.29, -0.36),
+    ("O09043", "NAPSA", "Napsin-A", -0.30, -0.36),
+    ("O54819", "TFPI", "Tissue factor pathway inhibitor", -0.30, -0.51),
+    ("P13020", "GSN", "Gelsolin", -0.32, -0.33),
+    ("O89103", "CD93", "Complement component C1q receptor", -0.38, -0.72),
+    ("P10605", "CTSB", "Cathepsin B", -0.42, -0.28),
+    ("Q8R2Y2", "MCAM", "Cell surface glycoprotein MUC18", -0.43, -1.36),
+    ("P42703", "LIFR", "Leukemia inhibitory factor receptor", -0.45, -0.34),
+    ("Q61207", "PSAP", "Prosaposin", -0.48, -0.41),
+    ("P82198", "TGFBI", "TGF-beta-induced protein ig-h3", -0.57, -0.63),
+    ("P47877", "IGFBP2", "Insulin-like growth factor-binding protein 2", -0.58, -0.51),
+    ("P51885", "LUM", "Lumican", -0.58, -0.30),
+    ("P43025", "CLEC3B", "Tetranectin", -0.59, -0.68),
+    ("Q8BK48", "CES2E", "Pyrethroid hydrolase Ces2e", -0.61, -1.28),
+    ("Q5FW60", "MUP20", "Major urinary protein 20", -0.65, -0.70),
+    ("Q03401", "CRISP1", "Cysteine-rich secretory protein 1", -0.66, -1.19),
+    ("Q80YX1", "TNC", "Tenascin", -0.69, -0.34),
+    ("Q6DFX2", "ANTXR2", "Anthrax toxin receptor 2", -0.72, -0.60),
+    ("Q8QZR4", "OAF", "Out at first protein homolog", -0.92, -2.81),
+    ("Q9QUN9", "DKK3", "Dickkopf-related protein 3", -0.93, -1.33),
+    ("P33434", "MMP2", "72 kDa type IV collagenase", -1.11, -0.54),
+    ("P70194", "CLEC4F", "C-type lectin domain family 4 member F", -1.53, -0.91),
+    ("P55284", "CDH5", "Cadherin-5", -1.60, -2.63),
+    ("Q60696", "PMEL", "Melanocyte protein PMEL", -2.10, -3.54),
+]
+KIMURA_2024A_DIRECTIONS = {g: (1 if d > 0 else -1) for _, g, _, d, _ in KIMURA_2024A_TABLE}
+
+
+def kimura_concordance_analysis(
+    annot: pd.DataFrame, data: pd.DataFrame, groups: list, group_a: str, group_b: str,
+    scale: str = "log2", n_boot_loo: bool = True,
+) -> tuple[pd.DataFrame, dict]:
+    """Exploratory external concordance check against Kimura et al. (2024a)'s complete
+    30-protein gravity-responsive serum signature (see KIMURA_2024A_TABLE). Genes with
+    multiple OSD-342 reagents are resolved genome-wide with the same lowest-CV,
+    outcome-independent rule used for the primary 39-marker panel
+    (select_primary_reagents), not restricted to the candidate panel. This is a
+    concordance check, not independent validation: OSD-342 (untreated spaceflight vs
+    ground) and Kimura's own comparisons (spaceflight mu-g vs onboard artificial-1g;
+    hindlimb-unloading vs control) are different contrasts in different animals.
+
+    Reports, in order of preference (least to most assumption-laden):
+      1. PRIMARY: exact permutation test of the direction-adjusted signature score,
+         enumerating all C(16,8)=12,870 possible 8-vs-8 relabelings of the untreated
+         animals -- preserves the correlation structure among proteins and does not
+         assume a 50% null concordance rate.
+      2. SECONDARY (descriptive): proportion concordant, with exact one-sided AND
+         two-sided binomial tests against a null of 0.5, plus an exact (Clopper-Pearson)
+         95% CI for the proportion.
+      3. SECONDARY (rank): Mann-Whitney U comparing the Kimura-oriented OSD-342
+         statistic for mapped proteins against the rest of the full proteome, with the
+         U statistic and rank-biserial correlation effect size reported explicitly.
+      4. Sensitivity: the above repeated with IGFBP2 excluded, since it is both the
+         manuscript's headline result and the strongest single contributor.
+    """
+    a_idx = [i for i, g in enumerate(groups) if g == group_a]
+    b_idx = [i for i, g in enumerate(groups) if g == group_b]
+    all_idx = a_idx + b_idx
+    pooled_idx = all_idx
+    n1 = len(a_idx)
+
+    best_row = {}
+    for i, gene in annot["EntrezGeneSymbol"].items():
+        if pd.isna(gene):
+            continue
+        a_raw = data.iloc[i, a_idx].values.astype(float)
+        b_raw = data.iloc[i, b_idx].values.astype(float)
+        if np.any(a_raw <= 0) or np.any(b_raw <= 0):
+            continue
+        all_vals = data.iloc[i, pooled_idx].values.astype(float)
+        cv = all_vals.std(ddof=1) / all_vals.mean()
+        if gene not in best_row or cv < best_row[gene][1]:
+            best_row[gene] = (i, cv)
+
+    rows = []
+    for gene, (i, _cv) in best_row.items():
+        a_raw = data.iloc[i, a_idx].values.astype(float)
+        b_raw = data.iloc[i, b_idx].values.astype(float)
+        a_vals = _scaled(a_raw, scale)
+        b_vals = _scaled(b_raw, scale)
+        t, _p = stats.ttest_ind(a_vals, b_vals, equal_var=False)
+        if np.isnan(t):
+            continue
+        rows.append({"Gene": gene, "t": t, "row": i})
+    full_df = pd.DataFrame(rows)
+
+    # ---- Full 30-protein table, mapped + unmapped, with mapping notes ----
+    kimura_df = pd.DataFrame(KIMURA_2024A_TABLE,
+                              columns=["UniProt_mouse_Kimura", "Gene", "ProteinName",
+                                       "Kimura_log2_muG_vs_A1g", "Kimura_log2_HU_vs_control"])
+    kimura_df["kimura_direction"] = kimura_df["Gene"].map(KIMURA_2024A_DIRECTIONS)
+    t_lookup = dict(zip(full_df["Gene"], full_df["t"]))
+    row_lookup = dict(zip(full_df["Gene"], full_df["row"]))
+    kimura_df["mapped"] = kimura_df["Gene"].isin(t_lookup)
+    kimura_df["osd342_SeqId"] = kimura_df["Gene"].map(
+        lambda g: annot.loc[row_lookup[g], "SeqId"] if g in row_lookup else None)
+    kimura_df["osd342_UniProt_human"] = kimura_df["Gene"].map(
+        lambda g: annot.loc[row_lookup[g], "UniProt"] if g in row_lookup else None)
+    kimura_df["osd342_t"] = kimura_df["Gene"].map(t_lookup)
+    kimura_df["osd342_direction"] = np.sign(kimura_df["osd342_t"])
+    kimura_df["concordant"] = kimura_df["kimura_direction"] == kimura_df["osd342_direction"]
+    ranked = full_df.sort_values("t").reset_index(drop=True)
+    rank_lookup = {g: i + 1 for i, g in enumerate(ranked["Gene"])}
+    kimura_df["osd342_full_proteome_rank"] = kimura_df["Gene"].map(
+        lambda g: rank_lookup.get(g))
+    kimura_df["n_total_reagents_for_gene"] = kimura_df["Gene"].map(
+        lambda g: int((annot["EntrezGeneSymbol"] == g).sum()))
+    kimura_df["mapping_note"] = kimura_df.apply(
+        lambda r: (
+            "Not present on SomaScan panel" if not r["mapped"]
+            else (f"{r['n_total_reagents_for_gene']} reagents on panel; lowest-CV reagent "
+                  f"retained (prespecified, outcome-independent rule)"
+                  if r["n_total_reagents_for_gene"] > 1 else "Single reagent")
+        ), axis=1)
+    kimura_df = kimura_df.sort_values("osd342_t").reset_index(drop=True)
+
+    mapped = kimura_df[kimura_df["mapped"]].copy()
+    n_mapped = len(mapped)
+    n_concordant = int(mapped["concordant"].sum())
+    missing = sorted(kimura_df.loc[~kimura_df["mapped"], "Gene"])
+
+    # ---- Secondary (descriptive): exact one- and two-sided binomial + exact CI ----
+    binom_1s = stats.binomtest(n_concordant, n_mapped, 0.5, alternative="greater")
+    binom_2s = stats.binomtest(n_concordant, n_mapped, 0.5, alternative="two-sided")
+    ci = binom_2s.proportion_ci(confidence_level=0.95, method="exact")
+
+    # ---- Secondary (rank): Mann-Whitney U, explicit definition + effect size ----
+    mapped["oriented_t"] = mapped["osd342_t"] * mapped["kimura_direction"]
+    rest = full_df[~full_df["Gene"].isin(KIMURA_2024A_DIRECTIONS)]
+    mwu = stats.mannwhitneyu(mapped["oriented_t"], rest["t"], alternative="greater")
+    n_x, n_y = len(mapped), len(rest)
+    rank_biserial = (2 * mwu.statistic) / (n_x * n_y) - 1  # common-language / rank-biserial effect size;
+    # +1 = mapped set entirely above rest, -1 = entirely below, 0 = no separation
+
+    # ---- Directional percentile (alternative, distribution-free framing of the same idea) ----
+    full_sorted_t = np.sort(full_df["t"].values)
+    n_full = len(full_sorted_t)
+
+    def directional_percentile(gene_t, direction):
+        # pct = ascending-order percentile (low t -> low pct). A predicted-DECREASE protein
+        # is concordant when its t is very negative (low raw pct), so reverse for direction=-1
+        # so that "concordant/extreme in the predicted direction" always maps to a HIGH value.
+        pct = np.searchsorted(full_sorted_t, gene_t, side="right") / n_full
+        return (1 - pct) if direction == -1 else pct
+
+    mapped["directional_percentile"] = [
+        directional_percentile(t, d) for t, d in zip(mapped["osd342_t"], mapped["kimura_direction"])
+    ]
+    mean_dir_pctile = float(mapped["directional_percentile"].mean())
+    pctile_wilcoxon = stats.wilcoxon(mapped["directional_percentile"] - 0.5, alternative="greater")
+
+    # ---- PRIMARY: exact permutation test of the direction-adjusted signature score ----
+    # Enumerates all C(16,8)=12,870 relabelings of the untreated animals; for each,
+    # recomputes the 23 mapped genes' Welch t-statistics, multiplies each by its Kimura-
+    # predicted sign, and compares two summary statistics (mean adjusted t; count
+    # concordant) against their exact permutation null distributions.
+    mapped_genes = list(mapped["Gene"])
+    mapped_rows = [row_lookup[g] for g in mapped_genes]
+    mapped_signs = np.array([KIMURA_2024A_DIRECTIONS[g] for g in mapped_genes])
+    mat = data.iloc[mapped_rows, all_idx].values.astype(float)
+    mat = _scaled(mat, scale)
+
+    def welch_t_matrix(vals_a, vals_b):
+        m1, m2 = vals_a.mean(axis=1), vals_b.mean(axis=1)
+        v1, v2 = vals_a.var(axis=1, ddof=1), vals_b.var(axis=1, ddof=1)
+        na, nb = vals_a.shape[1], vals_b.shape[1]
+        se = np.sqrt(v1 / na + v2 / nb)
+        return (m1 - m2) / se
+
+    n_total = mat.shape[1]
+    obs_t = welch_t_matrix(mat[:, :n1], mat[:, n1:])
+    obs_score = float(np.mean(obs_t * mapped_signs))
+    obs_n_concordant = int(np.sum(np.sign(obs_t) == mapped_signs))
+
+    n_perm = 0
+    score_ge = 0
+    concordant_ge = 0
+    for combo in itertools.combinations(range(n_total), n1):
+        combo = list(combo)
+        rest_idx = [j for j in range(n_total) if j not in combo]
+        t = welch_t_matrix(mat[:, combo], mat[:, rest_idx])
+        score = np.mean(t * mapped_signs)
+        if score >= obs_score - 1e-12:
+            score_ge += 1
+        if np.sum(np.sign(t) == mapped_signs) >= obs_n_concordant:
+            concordant_ge += 1
+        n_perm += 1
+
+    perm_score_p = score_ge / n_perm
+    perm_concordant_p = concordant_ge / n_perm
+
+    # ---- Sensitivity: exclude IGFBP2 (the headline result) ----
+    igfbp2_excl = mapped[mapped["Gene"] != "IGFBP2"]
+    n_excl = len(igfbp2_excl)
+    n_conc_excl = int(igfbp2_excl["concordant"].sum())
+    binom_excl_1s = stats.binomtest(n_conc_excl, n_excl, 0.5, alternative="greater")
+    binom_excl_2s = stats.binomtest(n_conc_excl, n_excl, 0.5, alternative="two-sided")
+
+    summary = {
+        "scale": scale,
+        "n_kimura_proteins_total": len(KIMURA_2024A_TABLE),
+        "n_mapped_to_osd342": n_mapped,
+        "n_not_on_panel": len(missing),
+        "genes_not_on_panel": ", ".join(missing),
+        "n_concordant": n_concordant,
+        "proportion_concordant": n_concordant / n_mapped,
+        "binomial_p_one_sided": binom_1s.pvalue,
+        "binomial_p_two_sided": binom_2s.pvalue,
+        "binomial_exact_ci_95_lo": ci.low,
+        "binomial_exact_ci_95_hi": ci.high,
+        "mannwhitney_U": float(mwu.statistic),
+        "mannwhitney_p_one_sided": mwu.pvalue,
+        "mannwhitney_rank_biserial": rank_biserial,
+        "mean_directional_percentile": mean_dir_pctile,
+        "directional_percentile_wilcoxon_p": pctile_wilcoxon.pvalue,
+        "n_exact_permutations": n_perm,
+        "perm_score_observed": obs_score,
+        "perm_score_p_one_sided": perm_score_p,
+        "perm_concordant_p_one_sided": perm_concordant_p,
+        "igfbp2_excluded_n_mapped": n_excl,
+        "igfbp2_excluded_n_concordant": n_conc_excl,
+        "igfbp2_excluded_proportion": n_conc_excl / n_excl,
+        "igfbp2_excluded_binomial_p_one_sided": binom_excl_1s.pvalue,
+        "igfbp2_excluded_binomial_p_two_sided": binom_excl_2s.pvalue,
+    }
+    return kimura_df, summary
+
+
 def exact_max_t_permutation(
     annot: pd.DataFrame, data: pd.DataFrame, groups: list, group_a: str, group_b: str,
     genes: list, scale: str = "log2", target_gene: str = "IGFBP2",
@@ -207,10 +484,7 @@ def exact_max_t_permutation(
     all_idx = a_idx + b_idx
     n1, n2 = len(a_idx), len(b_idx)
 
-    gene_row = {}
-    for i, gene in annot["EntrezGeneSymbol"].items():
-        if gene in genes and gene not in gene_row:
-            gene_row[gene] = i
+    gene_row = select_primary_reagents(annot, data, groups, group_a, group_b)
     rows = [gene_row[g] for g in genes]
 
     mat = data.iloc[rows, all_idx].values.astype(float)
@@ -351,10 +625,7 @@ def leave_one_out(
     a_idx = [i for i, g in enumerate(groups) if g == group_a]
     b_idx = [i for i, g in enumerate(groups) if g == group_b]
 
-    gene_row = {}
-    for i, gene in annot["EntrezGeneSymbol"].items():
-        if gene in genes and gene not in gene_row:
-            gene_row[gene] = i
+    gene_row = select_primary_reagents(annot, data, groups, group_a, group_b)
 
     rows = []
     for drop_group, drop_list in [("flight", a_idx), ("ground", b_idx)]:
@@ -507,6 +778,10 @@ def main() -> None:
     tr_models = treatment_recovery_models(annot, data, groups, gene="IGFBP2", scale="log2")
     tr_models.to_csv(TABLES_DIR / "osd342_treatment_recovery_models.csv", index=False)
 
+    kimura_genes, kimura_summary = kimura_concordance_analysis(annot, data, groups, GROUP_A, GROUP_B, scale="log2")
+    kimura_genes.to_csv(TABLES_DIR / "osd342_kimura_concordance_genes.csv", index=False)
+    pd.DataFrame([kimura_summary]).to_csv(TABLES_DIR / "osd342_kimura_concordance_summary.csv", index=False)
+
     top_gene = res_log2.iloc[0]["Gene"]
     plot_top_hit(annot, data, groups, top_gene, FIGURES_DIR / f"osd342_{top_gene.lower()}_boxplot.png")
     plot_marker_summary(res_log2, FIGURES_DIR / "osd342_marker_screen_summary.png")
@@ -516,6 +791,8 @@ def main() -> None:
     print(f"Top hit: {top_gene} (q={res_log2.iloc[0]['p_adj_BH']:.4f})")
     print("\nRobustness checks:")
     print(pd.DataFrame(robustness_rows).to_string(index=False))
+    print("\nKimura et al. (2024a) concordance:")
+    print(pd.DataFrame([kimura_summary]).to_string(index=False))
 
 
 if __name__ == "__main__":
