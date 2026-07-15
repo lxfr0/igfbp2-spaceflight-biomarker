@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "IGFBP2 Spaceflight Biomarker: OSD-977/OSD-342 Reanalysis Pipeline"
+authors:
+  - family-names: "Rahman"
+    given-names: "Alexander"
+    email: "afrahma2@asu.edu"
+    affiliation: "Arizona State University"
+repository-code: "https://github.com/lxfr0/igfbp2-spaceflight-biomarker"
+date-released: "2026-07-13"
