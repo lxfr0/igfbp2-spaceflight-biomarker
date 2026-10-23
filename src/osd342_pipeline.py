@@ -346,9 +346,12 @@ def kimura_concordance_analysis(
     kimura_df["osd342_t"] = kimura_df["Gene"].map(t_lookup)
     kimura_df["osd342_direction"] = np.sign(kimura_df["osd342_t"])
     kimura_df["concordant"] = kimura_df["kimura_direction"] == kimura_df["osd342_direction"]
+    # Directional rank by the log2-scale Welch t statistic (ascending, so the
+    # most negative flight-vs-ground statistic is rank 1).  This is distinct
+    # from the separate proteome-wide p-value ranks reported for IGFBP2.
     ranked = full_df.sort_values("t").reset_index(drop=True)
     rank_lookup = {g: i + 1 for i, g in enumerate(ranked["Gene"])}
-    kimura_df["osd342_full_proteome_rank"] = kimura_df["Gene"].map(
+    kimura_df["osd342_directional_t_rank"] = kimura_df["Gene"].map(
         lambda g: rank_lookup.get(g))
     kimura_df["n_total_reagents_for_gene"] = kimura_df["Gene"].map(
         lambda g: int((annot["EntrezGeneSymbol"] == g).sum()))
@@ -443,6 +446,30 @@ def kimura_concordance_analysis(
     binom_excl_1s = stats.binomtest(n_conc_excl, n_excl, 0.5, alternative="greater")
     binom_excl_2s = stats.binomtest(n_conc_excl, n_excl, 0.5, alternative="two-sided")
 
+    # Repeat the primary, correlation-aware exact permutation tests after
+    # removing IGFBP2.  This is the appropriate sensitivity analysis for the
+    # claim that the set-level result is not driven solely by the headline
+    # protein; the binomial sign test below is retained only as descriptive.
+    keep_excl = np.array([g != "IGFBP2" for g in mapped_genes])
+    mat_excl = mat[keep_excl, :]
+    signs_excl = mapped_signs[keep_excl]
+    obs_t_excl = welch_t_matrix(mat_excl[:, :n1], mat_excl[:, n1:])
+    obs_score_excl = float(np.mean(obs_t_excl * signs_excl))
+    obs_n_concordant_excl = int(np.sum(np.sign(obs_t_excl) == signs_excl))
+    score_ge_excl = 0
+    concordant_ge_excl = 0
+    for combo in itertools.combinations(range(n_total), n1):
+        combo = list(combo)
+        rest_idx = [j for j in range(n_total) if j not in combo]
+        t_excl = welch_t_matrix(mat_excl[:, combo], mat_excl[:, rest_idx])
+        if np.mean(t_excl * signs_excl) >= obs_score_excl - 1e-12:
+            score_ge_excl += 1
+        if np.sum(np.sign(t_excl) == signs_excl) >= obs_n_concordant_excl:
+            concordant_ge_excl += 1
+
+    perm_score_excl_p = score_ge_excl / n_perm
+    perm_concordant_excl_p = concordant_ge_excl / n_perm
+
     summary = {
         "scale": scale,
         "n_kimura_proteins_total": len(KIMURA_2024A_TABLE),
@@ -467,6 +494,9 @@ def kimura_concordance_analysis(
         "igfbp2_excluded_n_mapped": n_excl,
         "igfbp2_excluded_n_concordant": n_conc_excl,
         "igfbp2_excluded_proportion": n_conc_excl / n_excl,
+        "igfbp2_excluded_perm_score_observed": obs_score_excl,
+        "igfbp2_excluded_perm_score_p_one_sided": perm_score_excl_p,
+        "igfbp2_excluded_perm_concordant_p_one_sided": perm_concordant_excl_p,
         "igfbp2_excluded_binomial_p_one_sided": binom_excl_1s.pvalue,
         "igfbp2_excluded_binomial_p_two_sided": binom_excl_2s.pvalue,
     }

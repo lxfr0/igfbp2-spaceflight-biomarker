@@ -142,7 +142,8 @@ def group_stats(merged: pd.DataFrame, metric: str, tissue: str, mission: str) ->
     pairwise_df = pd.DataFrame(pairwise)
     if len(pairwise_df):
         cols = ["Mission", "Tissue", "Metric", "Comparison", "n1", "n2", "mean_diff", "ci_lo", "ci_hi",
-                "hedges_g", "hedges_g_ci_lo", "hedges_g_ci_hi", "t", "df", "p"]
+                "hedges_g", "hedges_g_ci_lo", "hedges_g_ci_hi",
+                "hedges_g_welch_ci_lo", "hedges_g_welch_ci_hi", "t", "df", "p"]
         pairwise_df = pairwise_df[cols]
     return pd.DataFrame(rows), pairwise_df, anova
 
